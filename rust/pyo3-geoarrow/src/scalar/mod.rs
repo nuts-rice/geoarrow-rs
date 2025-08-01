@@ -19,6 +19,8 @@ use crate::data_type::PyGeoType;
 use crate::error::PyGeoArrowResult;
 use crate::utils::text_repr::text_repr;
 
+use geo_svg::{Color, ToSvg};
+
 /// This is modeled as a geospatial array of length 1
 #[pyclass(module = "geoarrow.rust.core", name = "GeoScalar", subclass, frozen)]
 pub struct PyGeoScalar(Arc<dyn GeoArrowArray>);
@@ -66,6 +68,49 @@ impl PyGeoScalar {
             false
         }
     }
+
+    #[cfg(feature = "geo-svg")]
+    fn _repr_svg_(&self) -> PyGeoArrowResult<String> {
+        use geo_svg::ToSvg;
+        use geo_types::{Coord, Line};
+
+        use crate::scalar::bounding_rect::bounding_rect;
+
+        let bounds = bounding_rect(&self.0)?.unwrap_or_default();
+        let mut min_x = bounds.minx();
+        let mut min_y = bounds.miny();
+        let mut max_x = bounds.maxx();
+        let mut max_y = bounds.maxy();
+
+
+        min_x -= (max_x - min_x) * 0.05;
+        min_y -= (max_y - min_y) * 0.05;
+        max_x += (max_x - min_x) * 0.05;
+        max_y += (max_y - min_y) * 0.05;
+
+        let line = Line::new(min_x, min_y, max_x, max_y);
+        let svg = line.to_svg()
+            .with_stroke_color(Color::Black)
+            .with_fill_opacity(0.7);
+
+        let string = String::from_utf8(svg.to_string().as_bytes())
+            .map_err(|err| PyIOError::new_err(err.to_string()))?;
+
+        Ok(string)
+
+
+
+    }
+
+    #[cfg(feature = "geo-svg")]
+    #[getter]
+    fn __geo_interface__<'py>(&'py self, py: Python<'py>) -> PyGeoArrowResult<Bound<'py, PyAny>> {
+        let json_string = self._repr_svg_()?;
+        let json_mod = py.import(intern!(py, "json"))?;
+        Ok(json_mod.call_method1(intern!(py, "loads"), (json_string,))?)
+    } 
+
+
 
     #[cfg(feature = "geozero")]
     #[getter]
@@ -140,6 +185,33 @@ impl<'a> FromPyObject<'a> for PyGeoScalar {
         Ok(Self::try_new(ob.extract::<PyGeoArray>()?.into_inner())?)
     }
 }
+
+#[cfg(feature = "geo-svg")]
+fn process_svg_geom(
+    arr: &dyn GeoArrowArray,
+    svg: &mut geo_svg::Svg,
+) -> geo_svg::error::Result<()> {
+    use geoarrow_array::cast::AsGeoArrowArray;
+    use geoarrow_schema::GeoArrowType::*;
+    match arr.data_type() {
+        Point(_) => arr.as_point().process_geom(svg),
+        LineString(_) => arr.as_line_string().process_geom(svg),
+        Polygon(_) => arr.as_polygon().process_geom(svg),
+        MultiPoint(_) => arr.as_multi_point().process_geom(svg),
+        MultiLineString(_) => arr.as_multi_line_string().process_geom(svg),
+        MultiPolygon(_) => arr.as_multi_polygon().process_geom(svg),
+        GeometryCollection(_) => arr.as_geometry_collection().process_geom(svg),
+        Geometry(_) => arr.as_geometry().process_geom(svg),
+        Rect(_) => arr.as_rect().process_geom(svg),
+        Wkb(_) => arr.as_wkb::<i32>().process_geom(svg),
+        LargeWkb(_) => arr.as_wkb::<i64>().process_geom(svg),
+        WkbView(_) => arr.as_wkb_view().process_geom(svg),
+        Wkt(_) => arr.as_wkt::<i32>().process_geom(svg),
+        LargeWkt(_) => arr.as_wkt::<i64>().process_geom(svg),
+        WktView(_) => arr.as_wkt_view().process_geom(svg),
+    }
+}
+
 
 #[cfg(feature = "geozero")]
 fn process_svg_geom<W: Write>(
